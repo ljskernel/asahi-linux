@@ -267,8 +267,12 @@ static struct dma_async_tx_descriptor *sio_prep_dma_cyclic(
 		return NULL;
 
 	siotx = kzalloc(struct_size(siotx, siodesc, nperiods), GFP_NOWAIT);
-	if (!siotx)
+	if (!siotx) {
+		dev_err_ratelimited(siochan->host->dev,
+				    "chan %d: no memory for a %d-period transaction\n",
+				    siochan->no, nperiods);
 		return NULL;
+	}
 
 	init_completion(&siotx->done);
 	siotx->period_len = period_len;
@@ -279,6 +283,20 @@ static struct dma_async_tx_descriptor *sio_prep_dma_cyclic(
 
 		siotx->siodesc[i] = d = sio_alloc_desc(siochan->host);
 		if (!d) {
+			struct sio_data *sio = siochan->host;
+			const char *cur = "none";
+			unsigned long flags;
+
+			spin_lock_irqsave(&siochan->vc.lock, flags);
+			if (siochan->current_tx)
+				cur = siochan->current_tx->terminated ?
+				      "terminating" : "running";
+			spin_unlock_irqrestore(&siochan->vc.lock, flags);
+			dev_err_ratelimited(sio->dev,
+					    "chan %d: out of coprocessor descriptor slots (%u/%u in use, %d periods requested, current tx %s)\n",
+					    siochan->no,
+					    bitmap_weight(sio->desc_allocated, SIO_NO_DESC_SLOTS),
+					    SIO_NO_DESC_SLOTS, nperiods, cur);
 			siotx->vd.tx.chan = &siochan->vc.chan;
 			sio_tx_free(&siotx->vd);
 			return NULL;
@@ -441,6 +459,9 @@ static void sio_terminate_work(struct work_struct *wq)
 	if (ret < 0)
 		dev_err(siochan->host->dev, "terminate call on chan %d failed: %d\n",
 			siochan->no, ret);
+	else if (ret == 0)
+		dev_err(siochan->host->dev, "terminate call on chan %d NACKed\n",
+			siochan->no);
 
 	ret = wait_for_completion_timeout(&tx->done, msecs_to_jiffies(500));
 	if (!ret)
