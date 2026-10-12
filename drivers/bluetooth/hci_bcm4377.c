@@ -2431,6 +2431,16 @@ static int bcm4377_suspend(struct device *dev)
 	iowrite32(BCM4377_BAR0_SLEEP_CONTROL_QUIESCE,
 		  bcm4377->bar0 + BCM4377_BAR0_SLEEP_CONTROL);
 
+	/*
+	 * The firmware is only told to quiesce through the sleep control
+	 * register above; there is no D3 handshake comparable to the one
+	 * brcmfmac performs for the WLAN function of the same chip. Save the
+	 * config state here so that the PCI core skips pci_prepare_to_sleep()
+	 * and leaves the function in D0 across system suspend, which is what
+	 * the legacy PCI PM callbacks used to do.
+	 */
+	pci_save_state(pdev);
+
 	return 0;
 }
 
