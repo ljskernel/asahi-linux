@@ -428,6 +428,15 @@ static int dcp_pcm_trigger(struct snd_pcm_substream *substream, int cmd)
 
 	case SNDRV_PCM_TRIGGER_STOP:
 	case SNDRV_PCM_TRIGGER_SUSPEND:
+		/*
+		 * The dmaengine helper only queues the termination; wait for
+		 * SIO to actually retire the transaction and release its
+		 * coprocessor descriptors before the DP audio link is taken
+		 * down underneath it, and before a following START can try
+		 * to allocate a new transaction against the same slot pool.
+		 * We are nonatomic, so sleeping here is fine.
+		 */
+		dmaengine_synchronize(snd_dmaengine_pcm_get_chan(substream));
 		ret = dcp_audiosrv_stoplink(dcpaud->dcp_dev);
 		pm_runtime_mark_last_busy(dcpaud->dev);
 		__pm_runtime_put_autosuspend(dcpaud->dev);
