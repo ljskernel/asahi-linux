@@ -685,7 +685,8 @@ static void cd321x_update_work(struct work_struct *work)
 	if (old_role != USB_ROLE_NONE && (new_role != old_role || was_disconnected))
 		usb_role_switch_set_role(tps->role_sw, USB_ROLE_NONE);
 
-	if (cd321x->connector_fwnode && (!dp_hpd || dp_hpd_changed)) {
+	/* falling HPD edge only: level-triggered reporting spams the DCP */
+	if (cd321x->connector_fwnode && dp_hpd_changed && !dp_hpd) {
 		drm_connector_oob_hotplug_event(cd321x->connector_fwnode, connector_status_disconnected);
 	}
 
@@ -745,7 +746,8 @@ static void cd321x_update_work(struct work_struct *work)
 	/* Launch the USB role switch */
 	usb_role_switch_set_role(tps->role_sw, new_role);
 
-	if (cd321x->connector_fwnode && dp_hpd)
+	/* rising HPD edge only: re-reports re-run the connect path live */
+	if (cd321x->connector_fwnode && dp_hpd_changed && dp_hpd)
 		drm_connector_oob_hotplug_event(cd321x->connector_fwnode, connector_status_connected);
 
 	power_supply_changed(tps->psy);
@@ -1655,6 +1657,15 @@ static void cd321x_remove(struct tps6598x *tps)
 	struct cd321x *cd321x = container_of(tps, struct cd321x, tps);
 
 	cancel_delayed_work_sync(&cd321x->update_work);
+
+	/*
+	 * HPD never drops across a reload, so no edge will follow: report
+	 * the disconnect ourselves so the connect after re-probe rebuilds
+	 * the link from scratch.
+	 */
+	if (cd321x->connector_fwnode)
+		drm_connector_oob_hotplug_event(cd321x->connector_fwnode,
+						connector_status_disconnected);
 }
 
 int tipd_init(struct tps6598x *tps)
