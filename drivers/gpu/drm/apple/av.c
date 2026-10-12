@@ -115,6 +115,16 @@ static void av_audiosrv_teardown(struct apple_epic_service *service)
 	mutex_lock(&asrv->plug_lock);
 
 	down_write(&asrv->srv_rwsem);
+	if (asrv->srv != service) {
+		/*
+		 * Teardown of a superseded instance while a newer one is
+		 * bound: must not clobber the binding or report a phantom
+		 * disconnect.
+		 */
+		up_write(&asrv->srv_rwsem);
+		mutex_unlock(&asrv->plug_lock);
+		return;
+	}
 	asrv->srv = NULL;
 	up_write(&asrv->srv_rwsem);
 
