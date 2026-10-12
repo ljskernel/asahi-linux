@@ -763,7 +763,41 @@ static __maybe_unused int dcpaud_resume(struct device *dev)
 	return 0;
 }
 
-static DEFINE_RUNTIME_DEV_PM_OPS(dcpaud_pm_ops, dcpaud_suspend, dcpaud_resume, NULL);
+static int dcpaud_system_suspend(struct device *dev)
+{
+	struct dcp_audio *dcpaud = dev_get_drvdata(dev);
+
+	/*
+	 * Quiesce running streams while the AV service is still up;
+	 * suspending with audio DMA in flight wedges the DCP/SIO hard
+	 * enough that suspend never completes.
+	 */
+	if (dcpaud->card) {
+		snd_power_change_state(dcpaud->card, SNDRV_CTL_POWER_D3hot);
+		if (dcpaud->substream)
+			snd_pcm_suspend_all(dcpaud->substream->pcm);
+	}
+
+	return pm_runtime_force_suspend(dev);
+}
+
+static int dcpaud_system_resume(struct device *dev)
+{
+	struct dcp_audio *dcpaud = dev_get_drvdata(dev);
+	int ret;
+
+	ret = pm_runtime_force_resume(dev);
+
+	if (dcpaud->card)
+		snd_power_change_state(dcpaud->card, SNDRV_CTL_POWER_D0);
+
+	return ret;
+}
+
+static const struct dev_pm_ops dcpaud_pm_ops = {
+	RUNTIME_PM_OPS(dcpaud_suspend, dcpaud_resume, NULL)
+	SYSTEM_SLEEP_PM_OPS(dcpaud_system_suspend, dcpaud_system_resume)
+};
 
 static const struct of_device_id dcpaud_of_match[] = {
 	{ .compatible = "apple,dpaudio" },
