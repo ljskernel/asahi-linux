@@ -260,6 +260,7 @@ static int dcp_pcm_open(struct snd_pcm_substream *substream)
 		.flags = SND_DMAENGINE_PCM_DAI_FLAG_PACK,
 	};
 	struct snd_pcm_hardware hw;
+	struct dma_slave_caps caps;
 	int ret;
 
 	mutex_lock(&dcpaud->data_lock);
@@ -303,6 +304,14 @@ static int dcp_pcm_open(struct snd_pcm_substream *substream)
 							&hw, dcpaud->chan);
 	if (ret)
 		return ret;
+	/*
+	 * The DMA engine needs one descriptor per period of the cyclic
+	 * transaction and can only queue so many; advertise that as the
+	 * period count limit so hw_params clamps the buffer instead of
+	 * START failing with -ENOMEM on a configuration hw_params accepted.
+	 */
+	if (!dma_get_slave_caps(dcpaud->chan, &caps) && caps.max_sg_burst)
+		hw.periods_max = caps.max_sg_burst;
 	substream->runtime->hw = hw;
 
 	return snd_dmaengine_pcm_open(substream, dcpaud->chan);
