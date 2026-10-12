@@ -141,16 +141,20 @@ int dcp_audiosrv_prepare(struct device *dev, struct dcp_sound_cookie *cookie)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 	struct audiosrv_data *asrv = dcp->audiosrv;
+	u8 reply[64];
 	int ret;
 
 	down_write(&asrv->srv_rwsem);
 	ret = afk_service_call(asrv->srv, 0, asrv->cmds.prepare, cookie,
-			       sizeof(*cookie), 64 - sizeof(*cookie), NULL, 0,
-			       64);
+			       sizeof(*cookie), 64 - sizeof(*cookie), reply,
+			       sizeof(reply), 0);
 	up_write(&asrv->srv_rwsem);
 
 	if (ret)
 		dev_err(dcp->dev, "audiosrv: prepare failed: %d\n", ret);
+	else
+		dev_info(dcp->dev, "audiosrv: prepare reply: %*ph\n",
+			 (int)sizeof(reply), reply);
 
 	return ret;
 }
@@ -159,16 +163,20 @@ int dcp_audiosrv_startlink(struct device *dev, struct dcp_sound_cookie *cookie)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
 	struct audiosrv_data *asrv = dcp->audiosrv;
+	u8 reply[64];
 	int ret;
 
 	down_write(&asrv->srv_rwsem);
 	ret = afk_service_call(asrv->srv, 0, asrv->cmds.start_link, cookie,
-			       sizeof(*cookie), 64 - sizeof(*cookie), NULL, 0,
-			       64);
+			       sizeof(*cookie), 64 - sizeof(*cookie), reply,
+			       sizeof(reply), 0);
 	up_write(&asrv->srv_rwsem);
 
 	if (ret)
 		dev_err(dcp->dev, "audiosrv: start_link failed: %d\n", ret);
+	else
+		dev_info(dcp->dev, "audiosrv: start_link reply: %*ph\n",
+			 (int)sizeof(reply), reply);
 
 	return ret;
 }
