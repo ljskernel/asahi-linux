@@ -1250,6 +1250,7 @@ static int dcp_platform_probe(struct platform_device *pdev)
 
 	platform_set_drvdata(pdev, dcp);
 	INIT_DELAYED_WORK(&dcp->dptx_hpd_timeout_wq, dcp_dptx_hpd_timeout_work);
+	spin_lock_init(&dcp->hotplug_defer_lock);
 
 	dcp->phy = devm_phy_optional_get(dev, "dp-phy");
 	if (IS_ERR(dcp->phy)) {

@@ -186,6 +186,13 @@ struct apple_dcp {
 
 	/* Current display mode */
 	bool during_modeset;
+	/*
+	 * Hotplug state latched while a modeset is in flight, replayed
+	 * when it ends; the lock orders latch against clear.
+	 */
+	spinlock_t hotplug_defer_lock;
+	bool hotplug_deferred;
+	u64 hotplug_deferred_connected;
 	bool valid_mode;
 	bool use_timestamps;
 	struct dcp_set_digital_out_mode_req mode;

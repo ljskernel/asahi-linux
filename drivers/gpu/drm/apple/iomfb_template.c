@@ -1029,12 +1029,22 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 		dcp->dptx_connect_retries = 0;
 	}
 
+	/*
+	 * Latch, don't drop: a discarded disconnect leaves the connector
+	 * "connected" against a dead link forever. The modeset path
+	 * replays the latched state when it finishes.
+	 */
+	spin_lock(&dcp->hotplug_defer_lock);
 	if (dcp->during_modeset) {
+		dcp->hotplug_deferred = true;
+		dcp->hotplug_deferred_connected = *connected;
+		spin_unlock(&dcp->hotplug_defer_lock);
 		dev_info(dcp->dev,
-			 "cb_hotplug() ignored during modeset connected:%llu\n",
+			 "cb_hotplug() deferred during modeset connected:%llu\n",
 			 *connected);
 		return;
 	}
+	spin_unlock(&dcp->hotplug_defer_lock);
 
 	dev_info(dcp->dev, "cb_hotplug() connected:%llu, valid_mode:%d\n",
 		 *connected, dcp->valid_mode);
@@ -1205,6 +1215,8 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	struct dcp_display_mode *mode;
 	struct dcp_wait_cookie *cookie;
 	struct dcp_color_mode *cmode = NULL;
+	bool replay_hotplug;
+	u64 replay_connected;
 	int ret;
 
 	mode = lookup_mode(dcp, &crtc_state->mode);
@@ -1251,7 +1263,9 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 	/* increase refcount to ensure the receiver has a reference */
 	kref_get(&cookie->refcount);
 
+	spin_lock(&dcp->hotplug_defer_lock);
 	dcp->during_modeset = true;
+	spin_unlock(&dcp->hotplug_defer_lock);
 
 	dcp_set_digital_out_mode(dcp, false, &dcp->mode,
 				 complete_set_digital_out_mode, cookie);
@@ -1265,7 +1279,21 @@ int DCP_FW_NAME(iomfb_modeset)(struct apple_dcp *dcp,
 					  msecs_to_jiffies(8500));
 
 	kref_put(&cookie->refcount, release_wait_cookie);
+
+	spin_lock(&dcp->hotplug_defer_lock);
 	dcp->during_modeset = false;
+	replay_hotplug = dcp->hotplug_deferred;
+	replay_connected = dcp->hotplug_deferred_connected;
+	dcp->hotplug_deferred = false;
+	spin_unlock(&dcp->hotplug_defer_lock);
+
+	if (replay_hotplug) {
+		dev_info(dcp->dev,
+			 "replaying hotplug deferred by modeset: connected:%llu\n",
+			 replay_connected);
+		dcpep_cb_hotplug(dcp, &replay_connected);
+	}
+
 	dev_info(dcp->dev, "set_digital_out_mode finished:%d\n", ret);
 
 	if (ret == 0) {
