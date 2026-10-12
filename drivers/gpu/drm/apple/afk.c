@@ -239,6 +239,52 @@ static struct apple_epic_service *afk_epic_find_service(struct apple_dcp_afkep *
 }
 
 /*
+ * Free command slots abandoned by timed-out waiters (free_on_ack set)
+ * once their service goes away: the reply that would have released
+ * them can no longer arrive. Slots whose waiter is still parked are
+ * left alone.
+ */
+static void afk_reap_stale_cmds(struct apple_epic_service *service)
+{
+	struct apple_dcp_afkep *ep = service->ep;
+	void *rxbuf[MAX_PENDING_CMDS], *txbuf[MAX_PENDING_CMDS];
+	dma_addr_t rxbuf_dma[MAX_PENDING_CMDS], txbuf_dma[MAX_PENDING_CMDS];
+	size_t rxlen[MAX_PENDING_CMDS], txlen[MAX_PENDING_CMDS];
+	unsigned long flags;
+	unsigned int idx, i, n = 0;
+
+	spin_lock_irqsave(&service->lock, flags);
+	for_each_set_bit(idx, service->cmd_map, MAX_PENDING_CMDS) {
+		if (!service->cmds[idx].free_on_ack || service->cmds[idx].done)
+			continue;
+		service->cmds[idx].done = true;
+		rxbuf[n] = service->cmds[idx].rxbuf;
+		txbuf[n] = service->cmds[idx].txbuf;
+		rxbuf_dma[n] = service->cmds[idx].rxbuf_dma;
+		txbuf_dma[n] = service->cmds[idx].txbuf_dma;
+		rxlen[n] = service->cmds[idx].rxlen;
+		txlen[n] = service->cmds[idx].txlen;
+		n++;
+		bitmap_release_region(service->cmd_map, idx, 0);
+	}
+	spin_unlock_irqrestore(&service->lock, flags);
+
+	for (i = 0; i < n; i++) {
+		if (rxbuf[i] && rxlen[i])
+			dma_free_coherent(ep->dcp->dev, rxlen[i], rxbuf[i],
+					  rxbuf_dma[i]);
+		if (txbuf[i] && txlen[i])
+			dma_free_coherent(ep->dcp->dev, txlen[i], txbuf[i],
+					  txbuf_dma[i]);
+	}
+
+	if (n)
+		dev_info(ep->dcp->dev,
+			 "AFK[ep:%02x]: reaped %u abandoned commands on channel %d\n",
+			 ep->endpoint, n, service->channel);
+}
+
+/*
  * Teardown must leave a service's slot in place (a command may still
  * expect its reply on the channel), so slots are reaped here lazily,
  * when a new announce needs the channel or the table is full.
@@ -259,6 +305,8 @@ static void afk_epic_reap_service(struct apple_epic_service *service)
 
 	if (ops && ops->teardown)
 		ops->teardown(service);
+
+	afk_reap_stale_cmds(service);
 
 	spin_lock_irqsave(&service->lock, flags);
 	service->enabled = false;
@@ -411,6 +459,8 @@ static void afk_recv_handle_teardown(struct apple_dcp_afkep *ep, u32 channel)
 
 	if (ops->teardown)
 		ops->teardown(service);
+
+	afk_reap_stale_cmds(service);
 }
 
 static void afk_recv_handle_reply(struct apple_dcp_afkep *ep, u32 channel,
@@ -979,6 +1029,9 @@ int afk_send_command(struct apple_epic_service *service, u8 type,
 	spin_lock_irqsave(&service->lock, flags);
 	idx = bitmap_find_free_region(service->cmd_map, MAX_PENDING_CMDS, 0);
 	if (idx < 0) {
+		dev_err(ep->dcp->dev,
+			"AFK[ep:%02x]: command slots exhausted on channel %d\n",
+			ep->endpoint, service->channel);
 		ret = -ENOSPC;
 		goto err_unlock;
 	}
