@@ -238,30 +238,61 @@ static struct apple_epic_service *afk_epic_find_service(struct apple_dcp_afkep *
     return NULL;
 }
 
+/*
+ * Teardown must leave a service's slot in place (a command may still
+ * expect its reply on the channel), so slots are reaped here lazily,
+ * when a new announce needs the channel or the table is full.
+ */
+static void afk_epic_reap_service(struct apple_epic_service *service)
+{
+	const struct apple_epic_service_ops *ops = NULL;
+	unsigned long flags;
+
+	afk_remove_service_debugfs(service);
+
+	spin_lock_irqsave(&service->lock, flags);
+	if (!service->torndown) {
+		service->torndown = true;
+		ops = service->ops;
+	}
+	spin_unlock_irqrestore(&service->lock, flags);
+
+	if (ops && ops->teardown)
+		ops->teardown(service);
+
+	spin_lock_irqsave(&service->lock, flags);
+	service->enabled = false;
+	service->cookie = NULL;
+	spin_unlock_irqrestore(&service->lock, flags);
+}
+
 static void afk_recv_handle_init(struct apple_dcp_afkep *ep, u32 channel,
 				 u8 *payload, size_t payload_size)
 {
 	char name[32];
 	s64 epic_unit = -1;
 	u32 ch_idx;
+	u32 i;
 	const char *service_name = name;
 	const char *epic_name = NULL, *epic_class = NULL;
 	const struct apple_epic_service_ops *ops;
+	struct apple_epic_service *service;
 	struct dcp_parse_ctx ctx;
 	u8 *props = payload + sizeof(name);
 	size_t props_size = payload_size - sizeof(name);
 
-	WARN_ON(afk_epic_find_service(ep, channel));
+	service = afk_epic_find_service(ep, channel);
+	if (service) {
+		dev_info(ep->dcp->dev,
+			 "AFK[ep:%02x]: announce on channel %d supersedes %s service, reaping it\n",
+			 ep->endpoint, channel,
+			 service->torndown ? "a torndown" : "a live");
+		afk_epic_reap_service(service);
+	}
 
 	if (payload_size < sizeof(name)) {
 		dev_err(ep->dcp->dev, "AFK[ep:%02x]: payload too small: %lx\n",
 			ep->endpoint, payload_size);
-		return;
-	}
-
-	if (ep->num_channels >= AFK_MAX_CHANNEL) {
-		dev_err(ep->dcp->dev, "AFK[ep:%02x]: too many enabled services!\n",
-			ep->endpoint);
 		return;
 	}
 
@@ -305,7 +336,35 @@ static void afk_recv_handle_init(struct apple_dcp_afkep *ep, u32 channel,
 		goto free;
 	}
 
-	ch_idx = ep->num_channels++;
+	ch_idx = ep->num_channels;
+	for (i = 0; i < ep->num_channels; i++) {
+		if (!ep->services[i].enabled) {
+			ch_idx = i;
+			break;
+		}
+	}
+
+	if (ch_idx == AFK_MAX_CHANNEL) {
+		/* last resort: reap a zombie epoch to make room */
+		for (i = 0; i < ep->num_channels; i++) {
+			if (ep->services[i].enabled &&
+			    ep->services[i].torndown) {
+				afk_epic_reap_service(&ep->services[i]);
+				ch_idx = i;
+				break;
+			}
+		}
+	}
+
+	if (ch_idx == AFK_MAX_CHANNEL) {
+		dev_err(ep->dcp->dev, "AFK[ep:%02x]: too many enabled services!\n",
+			ep->endpoint);
+		goto free;
+	}
+
+	if (ch_idx == ep->num_channels)
+		ep->num_channels++;
+
 	spin_lock_init(&ep->services[ch_idx].lock);
 	ep->services[ch_idx].enabled = true;
 	ep->services[ch_idx].torndown = false;
