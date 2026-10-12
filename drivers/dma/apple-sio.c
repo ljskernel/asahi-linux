@@ -842,6 +842,13 @@ static int sio_probe(struct platform_device *pdev)
 
 	dma->directions = BIT(DMA_MEM_TO_DEV);
 	dma->residue_granularity = DMA_RESIDUE_GRANULARITY_SEGMENT;
+	/*
+	 * A cyclic transaction takes one coprocessor descriptor slot per
+	 * period out of a fixed shmem pool, so that is the hard limit on
+	 * segments per transaction. Clients (the DP audio PCM) size their
+	 * period count from this.
+	 */
+	dma->max_sg_burst = SIO_NO_DESC_SLOTS;
 	dma->dst_addr_widths = BIT(DMA_SLAVE_BUSWIDTH_1_BYTE) |
 			       BIT(DMA_SLAVE_BUSWIDTH_2_BYTES) |
 			       BIT(DMA_SLAVE_BUSWIDTH_4_BYTES);
