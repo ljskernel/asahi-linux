@@ -414,10 +414,10 @@ static int parse_color_modes(struct dcp_parse_ctx *handle,
 
 		if (cmode.eotf == DCP_EOTF_SDR_GAMMA) {
 			if (cmode.pixel_encoding == DCP_COLOR_FORMAT_RGB &&
-				cmode.depth <= 10)
+				cmode.depth <= 8)
 				fill_color_mode(&out->sdr_rgb, &cmode);
 			else if (cmode.pixel_encoding == DCP_COLOR_FORMAT_YCBCR444 &&
-				cmode.depth <= 10)
+				cmode.depth <= 8)
 				fill_color_mode(&out->sdr_444, &cmode);
 			fill_color_mode(&out->sdr, &cmode);
 		}
