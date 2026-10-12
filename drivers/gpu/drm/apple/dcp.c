@@ -356,6 +356,9 @@ int dcp_get_connector_type(struct platform_device *pdev)
 }
 
 #define DPTX_CONNECT_TIMEOUT msecs_to_jiffies(2000)
+#define DPTX_HPD_TIMEOUT msecs_to_jiffies(8000)
+#define DPTX_CONNECT_MAX_RETRIES 2
+#define DPTX_ACTIVITY_GRACE msecs_to_jiffies(4000)
 
 static int dcp_dptx_connect(struct apple_dcp *dcp, u32 port)
 {
@@ -401,6 +404,10 @@ static int dcp_dptx_connect(struct apple_dcp *dcp, u32 port)
 	if (dcp->avep)
 		av_service_connect(dcp);
 
+	dcp->dptx_hpd_timeout_port = port;
+	mod_delayed_work(system_unbound_wq, &dcp->dptx_hpd_timeout_wq,
+			 DPTX_HPD_TIMEOUT);
+
 	return 0;
 
 out_unlock:
@@ -420,6 +427,7 @@ static int dcp_dptx_disconnect(struct apple_dcp *dcp, u32 port)
 {
 	dev_info(dcp->dev, "%s(port=%d)\n", __func__, port);
 
+	cancel_delayed_work(&dcp->dptx_hpd_timeout_wq);
 	mutex_lock(&dcp->hpd_mutex);
 	if (dcp->dptxport[port].enabled && dcp->dptxport[port].connected) {
 		dptxport_release_display(dcp->dptxport[port].service);
@@ -430,9 +438,67 @@ static int dcp_dptx_disconnect(struct apple_dcp *dcp, u32 port)
 	return 0;
 }
 
+static void dcp_dptx_hpd_timeout_work(struct work_struct *work)
+{
+	struct apple_dcp *dcp = container_of(work, struct apple_dcp,
+					     dptx_hpd_timeout_wq.work);
+	u32 port = dcp->dptx_hpd_timeout_port;
+	bool stalled;
+
+	if (dcp->crashed)
+		return;
+
+	mutex_lock(&dcp->hpd_mutex);
+	stalled = dcp->dptxport[port].enabled &&
+		  dcp->dptxport[port].connected &&
+		  !(dcp->connector && dcp->connector->connected);
+	mutex_unlock(&dcp->hpd_mutex);
+
+	if (!stalled)
+		return;
+
+	/*
+	 * Retry only into total silence: recent dptx callbacks mean the
+	 * firmware is alive and likely mid link-training, where a reconnect
+	 * can crash it. Look again later, consuming no retry.
+	 */
+	if (time_before(jiffies, dcp->dptx_last_activity + DPTX_ACTIVITY_GRACE)) {
+		mod_delayed_work(system_unbound_wq, &dcp->dptx_hpd_timeout_wq,
+				 DPTX_HPD_TIMEOUT);
+		return;
+	}
+
+	if (dcp->dptx_connect_retries >= DPTX_CONNECT_MAX_RETRIES) {
+		dev_warn(dcp->dev,
+			 "dptx: port %u still has no HPD, giving up after %d reconnects\n",
+			 port, dcp->dptx_connect_retries);
+		return;
+	}
+	dcp->dptx_connect_retries++;
+
+	dev_warn(dcp->dev,
+		 "dptx: no HPD %u ms after connect on port %u, reconnecting (%d/%d)\n",
+		 jiffies_to_msecs(DPTX_HPD_TIMEOUT), port,
+		 dcp->dptx_connect_retries, DPTX_CONNECT_MAX_RETRIES);
+
+	disconnected_hpd_event(dcp->connector);
+	if (dcp->avep)
+		av_service_disconnect(dcp);
+	if (dcp->dptxport[port].enabled)
+		dptxport_set_hpd(dcp->dptxport[port].service, false);
+	dcp_dptx_disconnect(dcp, port);
+
+	/* let the firmware's teardown settle before reconnecting */
+	msleep(500);
+
+	dcp_dptx_connect(dcp, port);
+}
+
 int dcp_dptx_connect_oob(struct platform_device *pdev, u32 port)
 {
 	struct apple_dcp *dcp = platform_get_drvdata(pdev);
+
+	dcp->dptx_connect_retries = 0;
 	return dcp_dptx_connect(dcp, port);
 }
 
@@ -1096,6 +1162,8 @@ static void dcp_comp_unbind(struct device *dev, struct device *main, void *data)
 	if (!dcp)
 		return;
 
+	cancel_delayed_work_sync(&dcp->dptx_hpd_timeout_wq);
+
 	if (dcp->hdmi_hpd_irq)
 		disable_irq(dcp->hdmi_hpd_irq);
 
@@ -1181,6 +1249,7 @@ static int dcp_platform_probe(struct platform_device *pdev)
 	dcp->hw = *(struct apple_dcp_hw_data *)of_device_get_match_data(dev);
 
 	platform_set_drvdata(pdev, dcp);
+	INIT_DELAYED_WORK(&dcp->dptx_hpd_timeout_wq, dcp_dptx_hpd_timeout_work);
 
 	dcp->phy = devm_phy_optional_get(dev, "dp-phy");
 	if (IS_ERR(dcp->phy)) {
@@ -1307,6 +1376,8 @@ static void dcp_platform_shutdown(struct platform_device *pdev)
 static int dcp_platform_suspend(struct device *dev)
 {
 	struct apple_dcp *dcp = dev_get_drvdata(dev);
+
+	cancel_delayed_work_sync(&dcp->dptx_hpd_timeout_wq);
 
 	if (dcp->avep)
 		av_service_disconnect(dcp);

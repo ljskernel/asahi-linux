@@ -514,6 +514,8 @@ static int dptxport_call(struct apple_epic_service *service, u32 idx,
 	struct dptx_port *dptx = service->cookie;
 	trace_dptxport_apcall(dptx, idx, data_size);
 
+	service->ep->dcp->dptx_last_activity = jiffies;
+
 	switch (idx) {
 	case DPTX_APCALL_WILL_CHANGE_LINKG_CONFIG:
 		return dptxport_call_will_change_link_config(service);

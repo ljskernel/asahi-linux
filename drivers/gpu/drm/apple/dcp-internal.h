@@ -263,6 +263,12 @@ struct apple_dcp {
 
 	struct mutex hpd_mutex;
 
+	/* dptx connect watchdog: reconnect if the firmware never raises HPD */
+	struct delayed_work dptx_hpd_timeout_wq;
+	u32 dptx_hpd_timeout_port;
+	int dptx_connect_retries;
+	unsigned long dptx_last_activity;
+
 	u32 dptx_phy;
 	u32 dptx_die;
 	int hdmi_hpd_irq;

@@ -1020,6 +1020,15 @@ static void dcpep_cb_hotplug(struct apple_dcp *dcp, u64 *connected)
 	if (dcp->main_display)
 		return;
 
+	/*
+	 * A plug settles the pending connect. An unplug does not cancel:
+	 * if no tipd disconnect follows, the timeout is the retry we want.
+	 */
+	if (*connected) {
+		cancel_delayed_work(&dcp->dptx_hpd_timeout_wq);
+		dcp->dptx_connect_retries = 0;
+	}
+
 	if (dcp->during_modeset) {
 		dev_info(dcp->dev,
 			 "cb_hotplug() ignored during modeset connected:%llu\n",
