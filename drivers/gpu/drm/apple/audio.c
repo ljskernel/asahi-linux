@@ -9,8 +9,6 @@
  *    there's many DCP instances)
  */
 
-#define DEBUG
-
 #include <linux/component.h>
 #include <linux/debugfs.h>
 #include <linux/device.h>
