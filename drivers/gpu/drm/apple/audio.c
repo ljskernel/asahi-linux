@@ -39,6 +39,8 @@ struct dcp_audio {
 	struct device *dma_dev;
 	struct device_link *dma_link;
 	struct dma_chan *chan;
+	/* channel was in use when the DP link went down; needs re-acquiring */
+	bool chan_stale;
 	struct snd_card *card;
 	struct snd_jack *jack;
 	struct snd_pcm_substream *substream;
@@ -216,8 +218,16 @@ static int dcpaud_rule_rate(struct snd_pcm_hw_params *params,
 static int dcpaud_init_dma(struct dcp_audio *dcpaud)
 {
 	struct dma_chan *chan;
-	if (dcpaud->chan)
-		return 0;
+	bool first = !dcpaud->chan;
+
+	if (dcpaud->chan) {
+		if (!dcpaud->chan_stale)
+			return 0;
+		/* the SIO stream behind this channel died with the DP link */
+		dev_info(dcpaud->dev, "releasing stale audio TX DMA channel\n");
+		dma_release_channel(dcpaud->chan);
+		dcpaud->chan = NULL;
+	}
 
 	chan = of_dma_request_slave_channel(dcpaud->dev->of_node, "tx");
 	/* squelch dma channel request errors, the driver will try again alter */
@@ -232,10 +242,13 @@ static int dcpaud_init_dma(struct dcp_audio *dcpaud)
 		return PTR_ERR(chan);
 	}
 	dcpaud->chan = chan;
+	dcpaud->chan_stale = false;
 
-	snd_pcm_set_managed_buffer(dcpaud->substream, SNDRV_DMA_TYPE_DEV_IRAM,
-				   dcpaud->chan->device->dev, 1024 * 1024,
-				   SIZE_MAX);
+	if (first)
+		snd_pcm_set_managed_buffer(dcpaud->substream,
+					   SNDRV_DMA_TYPE_DEV_IRAM,
+					   dcpaud->chan->device->dev, 1024 * 1024,
+					   SIZE_MAX);
 
 	return 0;
 }
@@ -498,16 +511,20 @@ static void dcpaud_report_hotplug(struct dcp_audio *dcpaud, bool connected)
 	dcpaud->connected = connected;
 	if (connected)
 		dcpaud->connection_cookie++;
+	else if (dcpaud->chan)
+		dcpaud->chan_stale = true;
 	mutex_unlock(&dcpaud->data_lock);
 
 	snd_jack_report(dcpaud->jack, connected ? SND_JACK_AVOUT : 0);
 
-	if (!connected) {
-		snd_pcm_stream_lock(substream);
-		if (substream->runtime)
-			snd_pcm_stop(substream, SNDRV_PCM_STATE_DISCONNECTED);
-		snd_pcm_stream_unlock(substream);
-	}
+	/*
+	 * Stop open streams on both edges: a stream from an old connection
+	 * epoch can never start again (stale cookie), so force a reopen.
+	 */
+	snd_pcm_stream_lock(substream);
+	if (substream->runtime)
+		snd_pcm_stop(substream, SNDRV_PCM_STATE_DISCONNECTED);
+	snd_pcm_stream_unlock(substream);
 }
 
 static int dcpaud_create_jack(struct dcp_audio *dcpaud)

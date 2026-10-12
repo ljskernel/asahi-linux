@@ -119,6 +119,8 @@ static void av_audiosrv_teardown(struct apple_epic_service *service)
 	up_write(&asrv->srv_rwsem);
 
 	asrv->plugged = false;
+	/* open state died with the instance; the next one must be opened */
+	asrv->is_open = false;
 	if (asrv->audio_dev)
 		dcpaud_disconnect(asrv->audio_dev);
 
@@ -137,6 +139,9 @@ int dcp_audiosrv_prepare(struct device *dev, struct dcp_sound_cookie *cookie)
 			       64);
 	up_write(&asrv->srv_rwsem);
 
+	if (ret)
+		dev_err(dcp->dev, "audiosrv: prepare failed: %d\n", ret);
+
 	return ret;
 }
 
@@ -151,6 +156,9 @@ int dcp_audiosrv_startlink(struct device *dev, struct dcp_sound_cookie *cookie)
 			       sizeof(*cookie), 64 - sizeof(*cookie), NULL, 0,
 			       64);
 	up_write(&asrv->srv_rwsem);
+
+	if (ret)
+		dev_err(dcp->dev, "audiosrv: start_link failed: %d\n", ret);
 
 	return ret;
 }
